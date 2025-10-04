@@ -61,9 +61,9 @@
 <body>
   <div class="wrap">
 
-    <!-- CARD 1: APK FOLDER UPLOAD + ITS RECENT LIST -->
+    <!-- CARD 1: APK FOLDER/ZIP UPLOAD + RECENT LIST -->
     <div class="card">
-      <h2>APK Folder Upload → Firebase Storage (+ Firestore)</h2>
+      <h2>APK Upload → Firebase Storage (+ Firestore)</h2>
 
       <div class="row">
         <label class="muted">APK / Batch name (required)</label>
@@ -71,21 +71,30 @@
         <div id="apkNameErr" class="err">3–40 chars: letters/numbers/space/dash/underscore. Start with a letter/number.</div>
       </div>
 
+      <!-- One combined section: pickers + single drag area -->
       <div class="grid row">
         <div>
           <label class="muted">Pick a folder</label>
           <input id="folderPicker" type="file" webkitdirectory directory multiple />
-          <div class="hint">Use Chrome/Edge. Select the top-level folder.</div>
+          <div class="hint">Select the top-level Android project folder.</div>
         </div>
         <div>
-          <label class="muted">Or drag & drop a folder here</label>
-          <div id="dropZone">Drop a FOLDER (not single files)</div>
+          <label class="muted">Pick a ZIP</label>
+          <input id="zipPicker" type="file" accept=".zip" />
+          <div class="hint">Select a <b>.zip</b> of the project.</div>
         </div>
+      </div>
+
+      <div class="row">
+        <label class="muted">Or drag & drop here</label>
+        <div id="dropZone">Drop a <b>FOLDER</b> or a single <b>.ZIP</b></div>
+        <div class="hint" id="selectedInfo"></div>
+        <div class="hint" id="selectedZipInfo">No ZIP selected.</div>
       </div>
 
       <div class="row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
         <button id="btnUploadFolder" class="btn" disabled>Upload Folder</button>
-        <span id="selectedInfo" class="muted"></span>
+        <button id="btnUploadZip" class="btn" disabled>Upload ZIP</button>
       </div>
 
       <div id="progressDetails" class="row" hidden>
@@ -109,7 +118,7 @@
       <ul id="appsList" class="list"></ul>
     </div>
 
-    <!-- CARD 2: JSON UPLOAD + ITS RECENT (GROUPED BY PROJECT) -->
+    <!-- CARD 2: JSON UPLOAD + RECENT (GROUPED BY PROJECT) -->
     <div class="card">
       <h2>JSON Upload (Firestore)</h2>
 
@@ -175,11 +184,17 @@
     const apkNameEl     = $("apkName");
     const apkNameErr    = $("apkNameErr");
     const folderPicker  = $("folderPicker");
+    const zipPicker     = $("zipPicker");
     const dropZone      = $("dropZone");
     const btnUpload     = $("btnUploadFolder");
+    const btnUploadZip  = $("btnUploadZip");
     const selectedInfo  = $("selectedInfo");
+    const selectedZipInfo = $("selectedZipInfo");
+
+    // Progress
     const progressBlock = $("progressDetails");
     const appProgress   = $("appProgress");
+
     const appsList      = $("appsList");
 
     // JSON DOM
@@ -204,14 +219,16 @@
 
     // ---------- State ----------
     let selFolderFiles = []; // [{file, relPath}]
+    let selZipFile = null;   // File
     const HIDDEN_RE = /(^|\/)\.(?!well-known)/; // skip dotfiles (keep .well-known)
     const SKIP_PREFIXES = [/^__MACOSX\//];
 
-    // APK: enable button only when name+files ok
+    // APK: enable buttons only when name + selection ok
     function updateApkButtonState(){
-      const ok = selFolderFiles.length && validName(apkNameEl.value);
-      btnUpload.disabled = !ok;
-      show(apkNameErr, !validName(apkNameEl.value));
+      const okName = validName(apkNameEl.value);
+      btnUpload.disabled    = !(okName && selFolderFiles.length);
+      btnUploadZip.disabled = !(okName && !!selZipFile);
+      show(apkNameErr, !okName);
     }
     apkNameEl.addEventListener("input", updateApkButtonState);
 
@@ -241,7 +258,20 @@
       setSelected(mapped);
     });
 
-    // Drag & drop folders
+    // ---------- ZIP: minimal handler ----------
+    function setZip(file){
+      if (!file){ selZipFile=null; selectedZipInfo.textContent="No ZIP selected."; updateApkButtonState(); return; }
+      if (!/\.zip$/i.test(file.name)){ alert("Please choose a .zip file"); selZipFile=null; zipPicker.value=""; updateApkButtonState(); return; }
+      selZipFile = file;
+      selectedZipInfo.textContent = `ZIP selected: ${file.name} • ${fmtMB(file.size)}`;
+      updateApkButtonState();
+    }
+    zipPicker.addEventListener("change", ()=>{
+      const f = (zipPicker.files||[])[0];
+      setZip(f||null);
+    });
+
+    // ---------- Single combined drag area (folder OR .zip) ----------
     ["dragenter","dragover"].forEach(evt=>{
       dropZone.addEventListener(evt, (e)=>{ e.preventDefault(); e.stopPropagation(); dropZone.classList.add("drag"); });
     });
@@ -250,10 +280,21 @@
     });
     dropZone.addEventListener("drop", async (e)=>{
       const items = e.dataTransfer?.items;
-      const collected = [];
+      const files = Array.from(e.dataTransfer?.files || []);
+      // If there's a .zip file dropped (single file), prefer ZIP path
+      if (files.length === 1 && /\.zip$/i.test(files[0].name)){
+        setZip(files[0]);
+        return;
+      }
+      // Else try directory walk (Chrome/Edge provide entries)
       if (items && items[0] && items[0].webkitGetAsEntry){
         const entries=[]; for (const it of items){ const en=it.webkitGetAsEntry(); if(en) entries.push(en); }
-        if (!entries.some(en=>en.isDirectory)){ alert("Drop a FOLDER only (not single files)."); return; }
+        const anyDir = entries.some(en=>en.isDirectory);
+        if (!anyDir){
+          alert("Drop a FOLDER or a single .zip file.");
+          return;
+        }
+        const collected = [];
         async function walk(entry, prefix=""){
           if (entry.isFile){
             await new Promise(res => entry.file(f => { collected.push({ file:f, relPath: prefix + entry.name }); res(); }));
@@ -269,8 +310,10 @@
           }
         }
         for (const en of entries) await walk(en, "");
-      } else { alert("Your browser didn't provide folder entries. Use the 'Pick a folder' button."); return; }
-      setSelected(collected);
+        setSelected(collected);
+        return;
+      }
+      alert("Your browser didn't expose folder entries. Use the pickers above.");
     });
 
     // ---------- Progress ----------
@@ -300,7 +343,7 @@
     // ---------- Upload one file (SDK only; NO manual XHR) ----------
     async function uploadOne(parentId, apkName, relPath, file){
       const clean = relPath.replace(/^\.?\/*/, "");
-      const fullPath = `apk/${parentId}/${apkName}/${clean}`; // storage path prefix
+      const fullPath = `apk/${parentId}/${apkName}/${clean}`;
       const sref = ref(stg, fullPath);
       const started=PROG.uploadedBytes;
       updateFileHeader(clean);
@@ -332,7 +375,7 @@
       return { downloadURL, meta };
     }
 
-    // ---------- Upload all (APK) ----------
+    // ---------- Upload all (APK - folder) ----------
     async function doUpload(){
       const apkName = (apkNameEl.value||"").trim();
       if (!validName(apkName)){ show(apkNameErr,true); return; }
@@ -342,9 +385,8 @@
       const totalBytes = selFolderFiles.reduce((s,x)=>s+x.file.size,0);
       progStart(totalBytes, totalFiles);
 
-      btnUpload.disabled = true;
+      btnUpload.disabled = true; btnUploadZip.disabled = true;
       try{
-        // Parent doc inside "apk_files"
         const parentRef = doc(collection(db, "apk_files"));
         const parentId  = parentRef.id;
 
@@ -369,14 +411,68 @@
         }, { merge: true });
 
         alert(`Upload complete: ${apkName} (${totalFiles} files • ~${fmtMB(totalBytes)})`);
-        appProgress.value=0; selectedInfo.textContent=""; folderPicker.value="";
-        selFolderFiles=[]; progressBlock.hidden = true;
+        appProgress.value=0; folderPicker.value="";
+        selFolderFiles=[]; selectedInfo.textContent=""; progressBlock.hidden = true;
         updateApkButtonState();
         await refreshApps();
       }catch(e){
         alert("Upload failed: " + (e.message || e));
       }finally{
-        btnUpload.disabled = false;
+        btnUpload.disabled = false; btnUploadZip.disabled = false;
+      }
+    }
+
+    // ---------- Upload ZIP (unchanged logic) ----------
+    async function doUploadZip(){
+      const apkName = (apkNameEl.value||"").trim();
+      if (!validName(apkName)){ show(apkNameErr,true); return; }
+      if (!selZipFile){ alert("Please select a .zip first."); return; }
+
+      progStart(selZipFile.size, 1);
+      PROG.fileIndex = 0;
+      updateFileHeader(selZipFile.name);
+
+      btnUpload.disabled = true; btnUploadZip.disabled = true;
+      try{
+        const parentRef = doc(collection(db, "apk_files"));
+        const parentId  = parentRef.id;
+
+        const storagePath = `apk/${parentId}/${apkName}.zip`;
+        const sref = ref(stg, storagePath);
+
+        let last = 0;
+        const task = uploadBytesResumable(sref, selZipFile, { contentType: "application/zip" });
+        await new Promise((resolve,reject)=>{
+          task.on("state_changed",
+            snap=>{ const delta=snap.bytesTransferred-last; if(delta>0){ progBump(delta); last=snap.bytesTransferred; } },
+            reject,
+            resolve
+          );
+        });
+
+        const url = await getDownloadURL(task.snapshot.ref);
+
+        await setDoc(parentRef, {
+          docId: parentId,
+          createdAt: Date.now(),
+          apkName,
+          totalFiles: 1,
+          totalBytes: selZipFile.size,
+          docPath: `apk_files/${parentId}`,
+          source: "zip",
+          zipPath: storagePath,
+          zipURL: url
+        }, { merge: true });
+
+        alert(`ZIP uploaded: ${apkName}.zip • ${fmtMB(selZipFile.size)}`);
+        zipPicker.value=""; selZipFile=null; selectedZipInfo.textContent="No ZIP selected.";
+        progressBlock.hidden = true; appProgress.value=0;
+        updateApkButtonState();
+        await refreshApps();
+      }catch(e){
+        alert("ZIP upload failed: " + (e.message || e));
+      }finally{
+        btnUpload.disabled = false; btnUploadZip.disabled = false;
       }
     }
 
@@ -405,7 +501,6 @@
 
       btnUploadJson.disabled = true; btnUploadJson.textContent = "Uploading…";
       try{
-        // store flat in "json_templates" with project field
         await setDoc(doc(collection(db, "json_templates")), {
           project: proj,
           name: jname,
@@ -433,14 +528,13 @@
             <div><b>${x.apkName||"(no name)"} </b></div>
             <span class="muted">${x.createdAt? new Date(x.createdAt).toLocaleString() : "-"}</span>
           </div>
-          <div class="muted" style="margin:6px 0 8px">${x.totalFiles||0} file(s) • ~${fmtMB(x.totalBytes||0)}</div>
+          <div class="muted" style="margin:6px 0 8px">${x.totalFiles||0} file(s) • ~${fmtMB(x.totalBytes||0)} ${x.source?`• <code>${x.source}</code>`:""}</div>
           <code>${x.docPath||""}</code>`;
         appsList.appendChild(li);
       });
     }
 
     async function refreshJsonGroups(){
-      // Pull recent items and group in-memory by project
       const qJson = query(collection(db, "json_templates"), orderBy("createdAt","desc"), limit(100));
       const snap = await getDocs(qJson);
       const byProject = {};
@@ -451,7 +545,6 @@
         byProject[p].push(x);
       });
 
-      // Render groups
       jsonGroups.innerHTML = "";
       Object.keys(byProject).sort((a,b)=>a.localeCompare(b)).forEach(project=>{
         const groupEl = document.createElement("div");
@@ -483,6 +576,7 @@
 
     // wire up
     btnUpload.addEventListener("click", doUpload);
+    btnUploadZip.addEventListener("click", doUploadZip);
     btnUploadJson.addEventListener("click", uploadJson);
 
   </script>
