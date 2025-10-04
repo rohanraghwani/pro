@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Uploader — APK Files & JSON (CORS-safe, SDK-only, No-Auth)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <style>
+    :root{
+      --bg:#0b1020; --card:#121a2f; --card-2:#101728; --text:#e8edf7; --muted:#9fb0d0;
+      --brand:#5c87ff; --brand-2:#3b82f6; --border:#1f2a44; --shadow:0 10px 40px rgba(0,0,0,.35); --radius:14px;
+    }
+    @media (prefers-color-scheme: light){
+      :root{ --bg:#f5f7fb; --card:#fff; --card-2:#fff; --text:#0e172b; --muted:#475569; --border:#e5e7eb; --shadow:0 8px 24px rgba(16,24,40,.08); }
+    }
+    *{ box-sizing:border-box; } html,body{ height:100%; }
+    body{
+      margin:0; padding:24px;
+      background:radial-gradient(1200px 600px at 20% -10%, #1b2551 0%, transparent 60%),
+                 radial-gradient(1000px 700px at 120% 10%, #19234b 0%, transparent 60%), var(--bg);
+      color:var(--text); font:15px/1.45 system-ui,-apple-system,Segoe UI,Roboto,Arial,"Helvetica Neue",Helvetica,sans-serif;
+    }
+    h2{ margin:0 0 14px; font-size:22px; } h3{ margin:0 0 10px; font-size:18px; }
+    .wrap{ max-width:1100px; margin:0 auto; display:grid; gap:18px; grid-template-columns:1fr; }
+    .card{
+      background:linear-gradient(180deg,var(--card) 0%,var(--card-2) 100%);
+      border:1px solid var(--border); border-radius:var(--radius); padding:18px; box-shadow:var(--shadow);
+    }
+    .row{ margin:10px 0; } .muted{ color:var(--muted); }
+    .grid{ display:grid; gap:10px; grid-template-columns:1fr 1fr; }
+    @media (max-width:800px){ .grid{ grid-template-columns:1fr; } }
+
+    input[type="file"], input[type="text"], textarea{
+      width:100%; padding:12px 14px; border-radius:10px; border:1px solid var(--border);
+      background:rgba(255,255,255,.02); color:var(--text);
+    }
+    input[type="text"]:focus, textarea:focus{ border-color:#3559ff66; outline:none; }
+
+    .hint{ font-size:12px; margin-top:6px; color:#8fb1ff; }
+    .err{ color:#ff6b6b; font-size:12px; display:none; }
+
+    .btn{ border:1px solid transparent; border-radius:12px; padding:10px 14px;
+          background:linear-gradient(180deg,var(--brand),var(--brand-2)); color:#fff; font-weight:600; cursor:pointer; }
+    .btn[disabled]{ opacity:.6; pointer-events:none; }
+
+    #dropZone{ border:2px dashed #3b82f680; border-radius:14px; padding:22px; text-align:center;
+               background:linear-gradient(135deg,rgba(92,135,255,.08),rgba(59,130,246,.04)); color:var(--muted); transition:.2s; }
+    #dropZone.drag{ border-color:#5c87ff; background:linear-gradient(135deg,rgba(92,135,255,.18),rgba(59,130,246,.10)); color:#cfe0ff; }
+
+    progress{ width:100%; height:14px; -webkit-appearance:none; appearance:none; }
+    progress::-webkit-progress-bar{ background:#0d1326; border-radius:999px; border:1px solid var(--border); }
+    progress::-webkit-progress-value, progress::-moz-progress-bar{ background:linear-gradient(90deg,var(--brand),var(--brand-2)); border-radius:999px; }
+
+    code{ background:rgba(255,255,255,.05); border:1px solid var(--border); padding:2px 8px; border-radius:8px; color:#e2e8ff;
+          font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace; }
+    .list{ list-style:none; padding:0; margin:0; display:grid; gap:10px; }
+    .list li{ background:rgba(255,255,255,.02); border:1px solid var(--border); border-radius:12px; padding:12px 14px; }
+    .divider{ height:1px; background:var(--border); margin:16px 0; opacity:.7; }
+    .groupTitle{ margin:12px 0 8px; font-weight:700; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+
+    <!-- CARD 1: APK FOLDER UPLOAD + ITS RECENT LIST -->
+    <div class="card">
+      <h2>APK Folder Upload → Firebase Storage (+ Firestore)</h2>
+
+      <div class="row">
+        <label class="muted">APK / Batch name (required)</label>
+        <input id="apkName" type="text" placeholder="e.g. RTO-build-2025-10-04"/>
+        <div id="apkNameErr" class="err">3–40 chars: letters/numbers/space/dash/underscore. Start with a letter/number.</div>
+      </div>
+
+      <div class="grid row">
+        <div>
+          <label class="muted">Pick a folder</label>
+          <input id="folderPicker" type="file" webkitdirectory directory multiple />
+          <div class="hint">Use Chrome/Edge. Select the top-level folder.</div>
+        </div>
+        <div>
+          <label class="muted">Or drag & drop a folder here</label>
+          <div id="dropZone">Drop a FOLDER (not single files)</div>
+        </div>
+      </div>
+
+      <div class="row" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <button id="btnUploadFolder" class="btn" disabled>Upload Folder</button>
+        <span id="selectedInfo" class="muted"></span>
+      </div>
+
+      <div id="progressDetails" class="row" hidden>
+        <div class="row"><b>Overall</b></div>
+        <div class="row" style="display:flex;gap:14px;flex-wrap:wrap;">
+          <div class="muted">Transferred <b id="ovlUploaded">0 MB</b></div>
+          <div class="muted">Total <b id="ovlTotal">0 MB</b></div>
+          <div class="muted">Progress <b id="ovlPct">0%</b></div>
+          <div class="muted">Speed <b id="speedNow">0 MB/s</b></div>
+          <div class="muted">ETA <b id="etaNow">—</b></div>
+        </div>
+        <div class="row">
+          <span class="muted">File <span id="curFileIndex">0</span>/<span id="curFileTotal">0</span> — <code id="curFileName"></code></span>
+          <progress id="appProgress" max="100" value="0"></progress>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <h3>Recent Batches (APK Files)</h3>
+      <ul id="appsList" class="list"></ul>
+    </div>
+
+    <!-- CARD 2: JSON UPLOAD + ITS RECENT (GROUPED BY PROJECT) -->
+    <div class="card">
+      <h2>JSON Upload (Firestore)</h2>
+
+      <div class="row">
+        <label class="muted">Project (required)</label>
+        <input id="projectName" placeholder="e.g. RTO"/>
+      </div>
+      <div class="row">
+        <label class="muted">JSON Name (required)</label>
+        <input id="jsonName" placeholder="e.g. rto-config-v1"/>
+      </div>
+      <div class="row">
+        <textarea id="jsonText" placeholder="Paste JSON here" rows="8"></textarea>
+      </div>
+      <div class="row">
+        <div id="projErr" class="err">Project name is required (3–40 chars; letters/numbers/space/dash/underscore).</div>
+        <div id="jsonNameErr" class="err">JSON name is required (3–40 chars; letters/numbers/space/dash/underscore).</div>
+        <div id="jsonTextErr" class="err">Invalid or empty JSON. Please paste valid JSON.</div>
+      </div>
+      <div class="row">
+        <button id="btnUploadJson" class="btn">Upload JSON</button>
+      </div>
+
+      <div class="divider"></div>
+
+      <h3>Recent JSON (Grouped by Project)</h3>
+      <div id="jsonGroups"></div>
+    </div>
+
+  </div>
+
+  <!-- App -->
+  <script type="module">
+    // ---- Firebase (CDN modular) ----
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+    import {
+      getFirestore, doc, setDoc, collection, query, orderBy, limit, getDocs
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+    import {
+      getStorage, ref, uploadBytesResumable, getDownloadURL, getMetadata
+    } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
+
+    // ---- PROJECT CONFIG (bucket MUST be appspot.com) ----
+    const firebaseConfig = {
+      apiKey: "AIzaSyCVILH4OcOTL8yJLROxMvCx18fc4XQjQgM",
+      authDomain: "proh-c5886.firebaseapp.com",
+      projectId: "proh-c5886",
+      storageBucket: "proh-c5886.firebasestorage.app",
+      messagingSenderId: "17599239653",
+      appId: "1:17599239653:web:8e43e91ba39b96289f0b0c",
+      measurementId: "G-ST1BGKKH23"
+    };
+
+    // ---- Init (NO AUTH) ----
+    const app  = initializeApp(firebaseConfig);
+    const db   = getFirestore(app);
+    const stg  = getStorage(app); // SDK chooses correct API; no REST hardcoding
+
+    // ---------- DOM ----------
+    const $ = (id)=>document.getElementById(id);
+
+    // APK DOM
+    const apkNameEl     = $("apkName");
+    const apkNameErr    = $("apkNameErr");
+    const folderPicker  = $("folderPicker");
+    const dropZone      = $("dropZone");
+    const btnUpload     = $("btnUploadFolder");
+    const selectedInfo  = $("selectedInfo");
+    const progressBlock = $("progressDetails");
+    const appProgress   = $("appProgress");
+    const appsList      = $("appsList");
+
+    // JSON DOM
+    const projectNameEl = $("projectName");
+    const jsonNameEl    = $("jsonName");
+    const jsonTextEl    = $("jsonText");
+    const projErr       = $("projErr");
+    const jsonNameErr   = $("jsonNameErr");
+    const jsonTextErr   = $("jsonTextErr");
+    const btnUploadJson = $("btnUploadJson");
+    const jsonGroups    = $("jsonGroups");
+
+    // Helpers
+    const setText=(id,val)=>{ const n=$(id); if(n) n.textContent=val; };
+    const fmtMB=(b)=>(b/(1024*1024)).toFixed(2)+" MB";
+    const fmtTime=(sec)=>{ if(!isFinite(sec)||sec<0) return "—"; const s=Math.round(sec);
+      if(s<60) return `${s}s`; const m=Math.floor(s/60),r=s%60; if(m<60) return `${m}m ${r}s`;
+      const h=Math.floor(m/60),mm=m%60; return `${h}h ${mm}m`; };
+    const show=(el,yes)=>{ if(!el) return; el.style.display = yes ? "block" : "none"; };
+    const nameRegex = /^[A-Za-z0-9][A-Za-z0-9 _-]{2,40}$/; // 3–40 chars, start alnum
+    const validName = (s)=>nameRegex.test((s||"").trim());
+
+    // ---------- State ----------
+    let selFolderFiles = []; // [{file, relPath}]
+    const HIDDEN_RE = /(^|\/)\.(?!well-known)/; // skip dotfiles (keep .well-known)
+    const SKIP_PREFIXES = [/^__MACOSX\//];
+
+    // APK: enable button only when name+files ok
+    function updateApkButtonState(){
+      const ok = selFolderFiles.length && validName(apkNameEl.value);
+      btnUpload.disabled = !ok;
+      show(apkNameErr, !validName(apkNameEl.value));
+    }
+    apkNameEl.addEventListener("input", updateApkButtonState);
+
+    // ---------- Folder selection ----------
+    function setSelected(files){
+      selFolderFiles = files
+        .filter(x => !HIDDEN_RE.test(x.relPath))
+        .filter(x => !SKIP_PREFIXES.some(rx => rx.test(x.relPath)));
+
+      if (!selFolderFiles.length){
+        selectedInfo.textContent = "No valid files in folder.";
+      } else {
+        const total = selFolderFiles.reduce((s,x)=>s+x.file.size,0);
+        selectedInfo.textContent = `Folder selected: ${selFolderFiles.length} files • ~${fmtMB(total)}`;
+      }
+      updateApkButtonState();
+    }
+
+    folderPicker.addEventListener("change", ()=>{
+      const files = Array.from(folderPicker.files||[]);
+      const mapped = files.map(f => ({ file:f, relPath: f.webkitRelativePath || f.name }));
+      const hasDirPaths = mapped.some(x => x.relPath.includes("/"));
+      if (!hasDirPaths){
+        alert("Select a FOLDER (not a single file).");
+        folderPicker.value = ""; setSelected([]); return;
+      }
+      setSelected(mapped);
+    });
+
+    // Drag & drop folders
+    ["dragenter","dragover"].forEach(evt=>{
+      dropZone.addEventListener(evt, (e)=>{ e.preventDefault(); e.stopPropagation(); dropZone.classList.add("drag"); });
+    });
+    ["dragleave","drop"].forEach(evt=>{
+      dropZone.addEventListener(evt, (e)=>{ e.preventDefault(); e.stopPropagation(); if(evt==="dragleave"&&e.target!==dropZone) return; dropZone.classList.remove("drag"); });
+    });
+    dropZone.addEventListener("drop", async (e)=>{
+      const items = e.dataTransfer?.items;
+      const collected = [];
+      if (items && items[0] && items[0].webkitGetAsEntry){
+        const entries=[]; for (const it of items){ const en=it.webkitGetAsEntry(); if(en) entries.push(en); }
+        if (!entries.some(en=>en.isDirectory)){ alert("Drop a FOLDER only (not single files)."); return; }
+        async function walk(entry, prefix=""){
+          if (entry.isFile){
+            await new Promise(res => entry.file(f => { collected.push({ file:f, relPath: prefix + entry.name }); res(); }));
+          } else if (entry.isDirectory){
+            const reader = entry.createReader();
+            await new Promise((resolve, reject)=>{
+              const loop=()=>reader.readEntries(async ents=>{
+                if(!ents.length) return resolve();
+                for(const x of ents) await walk(x, prefix + entry.name + "/"); loop();
+              }, reject);
+              loop();
+            });
+          }
+        }
+        for (const en of entries) await walk(en, "");
+      } else { alert("Your browser didn't provide folder entries. Use the 'Pick a folder' button."); return; }
+      setSelected(collected);
+    });
+
+    // ---------- Progress ----------
+    const PROG={ totalBytes:0, uploadedBytes:0, fileIndex:0, fileTotal:0, startMs:0, lastBytes:0, lastTime:0, instSpeedBps:0 };
+    function progStart(totalBytes,fileTotal){
+      Object.assign(PROG,{ totalBytes, uploadedBytes:0, fileIndex:0, fileTotal, startMs:performance.now(), lastBytes:0, lastTime:performance.now(), instSpeedBps:0 });
+      appProgress.value=0; progressBlock.hidden = false; updateOverall();
+    }
+    function progBump(delta){
+      const now=performance.now(); PROG.uploadedBytes+=delta;
+      const dt=(now-PROG.lastTime)/1000;
+      if(dt>=2 || PROG.instSpeedBps===0){ const dbytes=PROG.uploadedBytes-PROG.lastBytes; PROG.instSpeedBps=dbytes/Math.max(dt,0.001); PROG.lastTime=now; PROG.lastBytes=PROG.uploadedBytes; }
+      updateOverall();
+    }
+    function updateOverall(){
+      const pct=PROG.totalBytes?(PROG.uploadedBytes/PROG.totalBytes)*100:0;
+      appProgress.value=Math.floor(pct);
+      setText("ovlUploaded",fmtMB(PROG.uploadedBytes));
+      setText("ovlTotal",fmtMB(PROG.totalBytes));
+      setText("ovlPct",pct.toFixed(1)+"%");
+      const speed=PROG.instSpeedBps || (PROG.uploadedBytes/Math.max((performance.now()-PROG.startMs)/1000,1));
+      setText("speedNow",(speed/(1024*1024)).toFixed(2)+" MB/s");
+      const remain=PROG.totalBytes-PROG.uploadedBytes; setText("etaNow",fmtTime(remain/Math.max(speed,1)));
+    }
+    function updateFileHeader(name){ setText("curFileName",name); setText("curFileIndex",String(PROG.fileIndex+1)); setText("curFileTotal",String(PROG.fileTotal)); }
+
+    // ---------- Upload one file (SDK only; NO manual XHR) ----------
+    async function uploadOne(parentId, apkName, relPath, file){
+      const clean = relPath.replace(/^\.?\/*/, "");
+      const fullPath = `apk/${parentId}/${apkName}/${clean}`; // storage path prefix
+      const sref = ref(stg, fullPath);
+      const started=PROG.uploadedBytes;
+      updateFileHeader(clean);
+
+      const task = uploadBytesResumable(sref, file, { contentType: file.type || "application/octet-stream" });
+      await new Promise((resolve,reject)=>{
+        task.on("state_changed",
+          snap=>{ const delta=(started+snap.bytesTransferred)-PROG.uploadedBytes; if(delta>0) progBump(delta); },
+          reject,
+          resolve
+        );
+      });
+
+      const downloadURL = await getDownloadURL(task.snapshot.ref);
+      let meta = {}; try{ meta = await getMetadata(task.snapshot.ref); }catch{}
+
+      const fileDoc = doc(collection(db, "apk_files", parentId, "files"));
+      await setDoc(fileDoc, {
+        apkName,
+        relPath: clean,
+        fileName: file.name,
+        sizeBytes: file.size,
+        contentType: file.type || null,
+        storagePath: task.snapshot.ref.fullPath,
+        downloadURL,
+        updatedAt: Date.now(),
+      }, { merge: true });
+
+      return { downloadURL, meta };
+    }
+
+    // ---------- Upload all (APK) ----------
+    async function doUpload(){
+      const apkName = (apkNameEl.value||"").trim();
+      if (!validName(apkName)){ show(apkNameErr,true); return; }
+      if (!selFolderFiles.length){ alert("Please select a folder first."); return; }
+
+      const totalFiles = selFolderFiles.length;
+      const totalBytes = selFolderFiles.reduce((s,x)=>s+x.file.size,0);
+      progStart(totalBytes, totalFiles);
+
+      btnUpload.disabled = true;
+      try{
+        // Parent doc inside "apk_files"
+        const parentRef = doc(collection(db, "apk_files"));
+        const parentId  = parentRef.id;
+
+        const CONCURRENCY = 4;
+        let idx = 0;
+        const workers = Array.from({length: CONCURRENCY}, async ()=>{
+          while (idx < selFolderFiles.length){
+            const my = idx++; PROG.fileIndex = my;
+            const { file, relPath } = selFolderFiles[my];
+            await uploadOne(parentId, apkName, relPath, file);
+          }
+        });
+        await Promise.all(workers);
+
+        await setDoc(parentRef, {
+          docId: parentId,
+          createdAt: Date.now(),
+          apkName,
+          totalFiles,
+          totalBytes,
+          docPath: `apk_files/${parentId}`
+        }, { merge: true });
+
+        alert(`Upload complete: ${apkName} (${totalFiles} files • ~${fmtMB(totalBytes)})`);
+        appProgress.value=0; selectedInfo.textContent=""; folderPicker.value="";
+        selFolderFiles=[]; progressBlock.hidden = true;
+        updateApkButtonState();
+        await refreshApps();
+      }catch(e){
+        alert("Upload failed: " + (e.message || e));
+      }finally{
+        btnUpload.disabled = false;
+      }
+    }
+
+    // ---------- JSON: validate + upload ----------
+    function validateJsonInputs(){
+      const proj = (projectNameEl.value||"").trim();
+      const jname = (jsonNameEl.value||"").trim();
+      const raw = (jsonTextEl.value||"").trim();
+
+      const projOk = validName(proj);
+      const nameOk = validName(jname);
+      let jsonOk = true;
+      if (!raw){ jsonOk = false; }
+      else { try{ JSON.parse(raw); jsonOk = true; }catch{ jsonOk = false; } }
+
+      show(projErr, !projOk);
+      show(jsonNameErr, !nameOk);
+      show(jsonTextErr, !jsonOk);
+
+      return { projOk, nameOk, jsonOk, proj, jname, raw };
+    }
+
+    async function uploadJson(){
+      const { projOk, nameOk, jsonOk, proj, jname, raw } = validateJsonInputs();
+      if (!(projOk && nameOk && jsonOk)) return;
+
+      btnUploadJson.disabled = true; btnUploadJson.textContent = "Uploading…";
+      try{
+        // store flat in "json_templates" with project field
+        await setDoc(doc(collection(db, "json_templates")), {
+          project: proj,
+          name: jname,
+          dataText: raw,
+          createdAt: Date.now()
+        });
+        alert(`JSON saved under project “${proj}” as “${jname}”.`);
+        projectNameEl.value=""; jsonNameEl.value=""; jsonTextEl.value="";
+        await refreshJsonGroups();
+      }finally{
+        btnUploadJson.disabled = false; btnUploadJson.textContent = "Upload JSON";
+      }
+    }
+
+    // ---------- Lists (APK + JSON grouped by project) ----------
+    async function refreshApps(){
+      const qApps = query(collection(db, "apk_files"), orderBy("createdAt","desc"), limit(30));
+      const snap = await getDocs(qApps);
+      appsList.innerHTML = "";
+      snap.forEach(d=>{
+        const x=d.data();
+        const li=document.createElement("li");
+        li.innerHTML = `
+          <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
+            <div><b>${x.apkName||"(no name)"} </b></div>
+            <span class="muted">${x.createdAt? new Date(x.createdAt).toLocaleString() : "-"}</span>
+          </div>
+          <div class="muted" style="margin:6px 0 8px">${x.totalFiles||0} file(s) • ~${fmtMB(x.totalBytes||0)}</div>
+          <code>${x.docPath||""}</code>`;
+        appsList.appendChild(li);
+      });
+    }
+
+    async function refreshJsonGroups(){
+      // Pull recent items and group in-memory by project
+      const qJson = query(collection(db, "json_templates"), orderBy("createdAt","desc"), limit(100));
+      const snap = await getDocs(qJson);
+      const byProject = {};
+      snap.forEach(d=>{
+        const x=d.data();
+        const p = (x.project||"Unassigned");
+        if (!byProject[p]) byProject[p] = [];
+        byProject[p].push(x);
+      });
+
+      // Render groups
+      jsonGroups.innerHTML = "";
+      Object.keys(byProject).sort((a,b)=>a.localeCompare(b)).forEach(project=>{
+        const groupEl = document.createElement("div");
+        const list = byProject[project];
+        let itemsHtml = "";
+        list.forEach(x=>{
+          itemsHtml += `
+            <li>
+              <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
+                <div><b>${x.name||"(no name)"}</b></div>
+                <span class="muted">${x.createdAt? new Date(x.createdAt).toLocaleString():"-"}</span>
+              </div>
+              <div class="muted" style="margin:6px 0 8px">Project: <code>${x.project||""}</code></div>
+            </li>`;
+        });
+        groupEl.innerHTML = `
+          <div class="groupTitle">${project}</div>
+          <ul class="list">${itemsHtml}</ul>`;
+        jsonGroups.appendChild(groupEl);
+      });
+
+      if (!Object.keys(byProject).length){
+        jsonGroups.innerHTML = `<div class="muted">No JSON uploaded yet.</div>`;
+      }
+    }
+
+    // initial load
+    await Promise.all([refreshApps(), refreshJsonGroups()]);
+
+    // wire up
+    btnUpload.addEventListener("click", doUpload);
+    btnUploadJson.addEventListener("click", uploadJson);
+
+  </script>
+</body>
+</html>
